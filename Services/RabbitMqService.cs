@@ -12,6 +12,7 @@ namespace Sentinel.SecurityGate.Service.Services
         Task PublishScanRequestAsync<T>(T message, string routingKey);
         Task PublishScanResultAsync<T>(T message);
         void StartListeningForResults(Func<string, Task> messageHandler);
+        void StartListeningForRequests(Func<string, Task> messageHandler);
         void Dispose();
     }
 
@@ -58,7 +59,7 @@ namespace Sentinel.SecurityGate.Service.Services
 
                 _channel.ExchangeDeclare(
                     exchange: _config.ScanResultExchange,
-                    type: ExchangeType.Fanout,
+                    type: ExchangeType.Topic,
                     durable: true,
                     autoDelete: false);
 
@@ -84,7 +85,7 @@ namespace Sentinel.SecurityGate.Service.Services
                 _channel.QueueBind(
                     queue: _config.ScanResultQueue,
                     exchange: _config.ScanResultExchange,
-                    routingKey: "");
+                    routingKey: "scan.*.*");
 
                 _logger.LogInformation("RabbitMQ inicializado correctamente");
             }
@@ -142,18 +143,42 @@ namespace Sentinel.SecurityGate.Service.Services
                         var json = JsonSerializer.Serialize(message);
                         var body = Encoding.UTF8.GetBytes(json);
 
+                        // Intentar inferir routing key desde el payload JSON
+                        string routingKey = "scan.unknown.completed";
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(json);
+                            var root = doc.RootElement;
+                            if (root.ValueKind == JsonValueKind.Object)
+                            {
+                                if (root.TryGetProperty("scanType", out var st) && st.ValueKind == JsonValueKind.String)
+                                {
+                                    routingKey = $"scan.{st.GetString()?.ToLower()}.completed";
+                                }
+                                else if (root.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String)
+                                {
+                                    routingKey = $"scan.{t.GetString()?.ToLower()}.completed";
+                                }
+                                else if (root.TryGetProperty("tool", out var tool) && tool.ValueKind == JsonValueKind.String)
+                                {
+                                    routingKey = $"scan.{tool.GetString()?.ToLower()}.completed";
+                                }
+                            }
+                        }
+                        catch { /* ignore parse errors and fallback to default */ }
+
                         var properties = _channel!.CreateBasicProperties();
                         properties.Persistent = true;
                         properties.ContentType = "application/json";
 
                         _channel.BasicPublish(
                             exchange: _config.ScanResultExchange,
-                            routingKey: "",
+                            routingKey: routingKey,
                             basicProperties: properties,
                             body: body);
 
-                        _logger.LogInformation("Resultado publicado en exchange {Exchange}",
-                            _config.ScanResultExchange);
+                        _logger.LogInformation("Resultado publicado en exchange {Exchange} con routing key {RoutingKey}",
+                            _config.ScanResultExchange, routingKey);
                     }
                     catch (Exception ex)
                     {
@@ -205,6 +230,46 @@ namespace Sentinel.SecurityGate.Service.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al iniciar listener de RabbitMQ");
+                throw;
+            }
+        }
+
+        public void StartListeningForRequests(Func<string, Task> messageHandler)
+        {
+            try
+            {
+                var consumer = new AsyncEventingBasicConsumer(_channel);
+
+                consumer.Received += async (sender, eventArgs) =>
+                {
+                    var body = eventArgs.Body.ToArray();
+                    var message = Encoding.UTF8.GetString(body);
+
+                    try
+                    {
+                        _logger.LogInformation("Solicitud de escaneo recibida en la cola {Queue}", _config.ScanRequestQueue);
+
+                        await messageHandler(message);
+
+                        _channel!.BasicAck(eventArgs.DeliveryTag, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error procesando solicitud de escaneo");
+                        _channel!.BasicNack(eventArgs.DeliveryTag, false, true);
+                    }
+                };
+
+                _channel!.BasicConsume(
+                    queue: _config.ScanRequestQueue,
+                    autoAck: false,
+                    consumer: consumer);
+
+                _logger.LogInformation("Escuchando solicitudes de escaneo en la cola {Queue}", _config.ScanRequestQueue);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al iniciar listener de solicitudes");
                 throw;
             }
         }

@@ -1,124 +1,70 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Sentinel.SecurityGate.Service.Models;
-using Sentinel.SecurityGate.Service.Services;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Sentinel.SecurityGate.Service.Dtos;
+using Sentinel.SecurityGate.Service.Services;
 
-namespace Sentinel.SecurityGate.Service.BackgroundServices
+namespace Sentinel.SecurityGate.Service.BackgroundServices;
+
+public class ScanRequestListener : BackgroundService
 {
-    /// <summary>
-    /// Servicio en background que escucha los resultados de escaneo desde RabbitMQ
-    /// </summary>
-    public class ScanResultListener : BackgroundService
+    private readonly ILogger<ScanRequestListener> _logger;
+    private readonly IServiceProvider _serviceProvider;
+
+    public ScanRequestListener(ILogger<ScanRequestListener> logger, IServiceProvider serviceProvider)
     {
-        private readonly ILogger<ScanResultListener> _logger;
-        private readonly IServiceProvider _serviceProvider;
+        _logger = logger;
+        _serviceProvider = serviceProvider;
+    }
 
-        public ScanResultListener(
-            ILogger<ScanResultListener> logger,
-            IServiceProvider serviceProvider)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("ScanRequestListener iniciado");
+
+        using var scope = _serviceProvider.CreateScope();
+        var rabbit = scope.ServiceProvider.GetRequiredService<IRabbitMqService>();
+
+        rabbit.StartListeningForRequests(async (message) =>
         {
-            _logger = logger;
-            _serviceProvider = serviceProvider;
-        }
+            await ProcessMessageAsync(message, scope.ServiceProvider);
+        });
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        await Task.Delay(Timeout.Infinite, stoppingToken);
+    }
+
+    private async Task ProcessMessageAsync(string message, IServiceProvider serviceProvider)
+    {
+        try
         {
-            _logger.LogInformation("ScanResultListener iniciado");
+            _logger.LogInformation("Procesando mensaje de solicitud de escaneo: {Message}", message);
 
-            using var scope = _serviceProvider.CreateScope();
-            var rabbitMqService = scope.ServiceProvider.GetRequiredService<IRabbitMqService>();
+            // Intentar mapear el payload a ScanCommandDto
+            var jsonDoc = JsonDocument.Parse(message);
 
-            // Iniciar el listener de RabbitMQ
-            rabbitMqService.StartListeningForResults(async (message) =>
+            var cmd = new ScanCommandDto { ScanType = "SAST" };
+
+            if (jsonDoc.RootElement.TryGetProperty("scanId", out var scanIdEl) && scanIdEl.ValueKind == JsonValueKind.String)
             {
-                await ProcessScanResultAsync(message, scope.ServiceProvider);
-            });
-
-            // Mantener el servicio corriendo
-            await Task.Delay(Timeout.Infinite, stoppingToken);
-        }
-
-        private async Task ProcessScanResultAsync(string message, IServiceProvider serviceProvider)
-        {
-            try
-            {
-                // Deserializar el resultado del escaneo
-                var scanResult = JsonSerializer.Deserialize<ScanResult>(message);
-                
-                if (scanResult == null)
-                {
-                    _logger.LogWarning("Mensaje recibido no pudo ser deserializado");
-                    return;
-                }
-
-                _logger.LogInformation(
-                    "Resultado de escaneo recibido. ScanId: {ScanId}, Status: {Status}, QualityGate: {QualityGate}",
-                    scanResult.ScanId,
-                    scanResult.Status,
-                    scanResult.QualityGatePassed);
-
-                // Aquí puedes:
-                // 1. Guardar en base de datos
-                // 2. Notificar al Java BFF vía webhook
-                // 3. Enviar notificaciones
-                // 4. Actualizar métricas
-
-                // Ejemplo: Guardar en DB (necesitarías un servicio de repositorio)
-                // var scanRepository = serviceProvider.GetRequiredService<IScanRepository>();
-                // await scanRepository.SaveScanResultAsync(scanResult);
-
-                // Ejemplo: Notificar al Java BFF
-                var httpClient = serviceProvider.GetRequiredService<IHttpClientFactory>().CreateClient();
-                var configuration = serviceProvider.GetRequiredService<IConfiguration>();
-                var bffWebhookUrl = configuration["JavaBFF:WebhookUrl"];
-
-                if (!string.IsNullOrEmpty(bffWebhookUrl))
-                {
-                    var notification = new
-                    {
-                        scanId = scanResult.ScanId,
-                        status = scanResult.Status.ToString(),
-                        qualityGatePassed = scanResult.QualityGatePassed,
-                        completedAt = scanResult.CompletedAt,
-                        summary = scanResult.Summary
-                    };
-
-                    var jsonContent = new StringContent(
-                        JsonSerializer.Serialize(notification),
-                        System.Text.Encoding.UTF8,
-                        "application/json");
-
-                    var response = await httpClient.PostAsync(bffWebhookUrl, jsonContent);
-                    
-                    if (response.IsSuccessStatusCode)
-                    {
-                        _logger.LogInformation("Notificación enviada al Java BFF para ScanId: {ScanId}", 
-                            scanResult.ScanId);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Error al notificar al Java BFF. Status: {StatusCode}", 
-                            response.StatusCode);
-                    }
-                }
-
-                _logger.LogInformation("Resultado procesado exitosamente para ScanId: {ScanId}", 
-                    scanResult.ScanId);
+                if (Guid.TryParse(scanIdEl.GetString(), out var g)) cmd.ScanId = g;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error procesando resultado de escaneo");
-                throw; // Para que RabbitMQ reencole el mensaje
-            }
-        }
 
-        public override async Task StopAsync(CancellationToken cancellationToken)
+            if (jsonDoc.RootElement.TryGetProperty("requestedService", out var reqSvc))
+            {
+                cmd.ScanType = reqSvc.GetString() ?? "SAST";
+            }
+
+            if (jsonDoc.RootElement.TryGetProperty("targetRepo", out var repo)) cmd.RepositoryUrl = repo.GetString();
+            if (jsonDoc.RootElement.TryGetProperty("targetUrl", out var turl)) cmd.TargetUrl = turl.GetString();
+            if (jsonDoc.RootElement.TryGetProperty("clientGitToken", out var token)) cmd.ClientGitToken = token.GetString();
+
+            // Iniciar workflow (llama a n8n vía HttpScanOrchestrator)
+            var orchestrator = serviceProvider.GetRequiredService<IScanOrchestrator>();
+            await orchestrator.StartScanWorkflowAsync(cmd);
+
+            _logger.LogInformation("Workflow iniciado para ScanId: {ScanId}", cmd.ScanId);
+        }
+        catch (Exception ex)
         {
-            _logger.LogInformation("ScanResultListener detenido");
-            await base.StopAsync(cancellationToken);
+            _logger.LogError(ex, "Error procesando solicitud de escaneo desde RabbitMQ");
         }
     }
 }

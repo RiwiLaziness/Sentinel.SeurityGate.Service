@@ -10,11 +10,11 @@ namespace Sentinel.SecurityGate.Service.Models
     {
         public Guid ScanId { get; set; }
         
-        public required string ScanType { get; set; }
+        public string? ScanType { get; set; }
         
-        public required string Target { get; set; }
+        public string? Target { get; set; }
         
-        public required string ClientId { get; set; }
+        public string? ClientId { get; set; }
         
         /// <summary>
         /// Timestamp de cuando inició el escaneo

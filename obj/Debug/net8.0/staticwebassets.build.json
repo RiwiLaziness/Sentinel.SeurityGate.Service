@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "StGFZOpJfKkF3LZFWe4bX7xcOEy4hmN2WWALUFt1qVk=",
+  "Source": "Sentinel.SecurityGate.Service",
+  "BasePath": "_content/Sentinel.SecurityGate.Service",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}

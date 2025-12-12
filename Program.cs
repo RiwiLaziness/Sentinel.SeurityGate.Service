@@ -23,6 +23,7 @@ builder.Services.AddScoped<IScanOrchestrator, HttpScanOrchestrator>();
 
 // Background Services
 builder.Services.AddHostedService<ScanResultListener>();
+builder.Services.AddHostedService<ScanRequestListener>();
 
 // Logging
 builder.Logging.ClearProviders();

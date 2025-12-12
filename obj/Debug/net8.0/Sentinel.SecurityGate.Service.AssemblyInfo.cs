@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Sentinel.SecurityGate.Service")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3f3394cc25f1e5aaec2eacd5806639295171ac54")]
 [assembly: System.Reflection.AssemblyProductAttribute("Sentinel.SecurityGate.Service")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Sentinel.SecurityGate.Service")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
